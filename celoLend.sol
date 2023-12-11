@@ -4,7 +4,7 @@ pragma solidity 0.8.19;
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.4.0/contracts/token/ERC20/IERC20.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.4.0/contracts/access/Ownable.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.4.0/contracts/security/Pausable.sol";
-
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.4.0/contracts/utils/structs/EnumerableMap.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
@@ -24,6 +24,17 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         Lending[] lendings;
     }
 
+    struct WhitelistInfo {
+        bool isWhitelisted;
+        uint256 index;
+    }
+
+    struct UserLendingDetails {
+        address user;
+        uint256 agreedQuota;
+        Lending[] lendings;
+    }
+
     /*****************************************
      *               Storage                 *
      *****************************************/
@@ -35,7 +46,10 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
     uint256 public totalFunds;
     uint256 public totalInterest;
 
-    mapping(address => bool) public whitelist;
+    using EnumerableMap for EnumerableMap.UintToAddressMap;
+    EnumerableMap.UintToAddressMap private whitelistedAddress;
+
+    mapping(address => WhitelistInfo) public whitelist;
     mapping(address => uint256) public property;
     mapping(address => Lender) public lenders;
 
@@ -84,9 +98,94 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         return compoundedAmount;
     }
 
+    function getActiveLoans(
+        address _lender,
+        uint256 offset,
+        uint256 limit
+    ) public view returns (Lending[] memory) {
+        Lender storage lender = lenders[_lender];
+        uint256 totalLoans = lender.lendings.length;
+        if (limit > totalLoans - offset) {
+            limit = totalLoans - offset;
+        }
+
+        Lending[] memory activeLoans = new Lending[](limit);
+        uint256 currentIndex = 0;
+
+        for (uint256 i = 0; i < limit; i++) {
+            Lending storage lending = lender.lendings[offset + i];
+            if (lending.amount > 0) {
+                activeLoans[currentIndex] = lending;
+                currentIndex++;
+            }
+        }
+
+        return activeLoans;
+    }
+
+    function getCurrentQuota(address _lender) public view returns (uint256) {
+        return lenders[_lender].aggreedQuota;
+    }
+
+    function getWhitelistedUserDetails(uint256 startIndex)
+        public
+        view
+        returns (UserLendingDetails[] memory)
+    {
+        uint256 whitelistSize = whitelistedAddress.length();
+        if (startIndex >= whitelistSize) {
+            return new UserLendingDetails[](0);
+        }
+
+        uint256 endIndex = startIndex + 10 > whitelistSize
+            ? whitelistSize
+            : startIndex + 10;
+
+        UserLendingDetails[] memory userDetails = new UserLendingDetails[](
+            endIndex - startIndex
+        );
+        for (uint256 i = startIndex; i < endIndex; i++) {
+            (, address userAddress) = whitelistedAddress.at(i);
+            uint256 quota = getCurrentQuota(userAddress);
+            Lending[] memory userLendings = getActiveLoans(
+                userAddress,
+                0,
+                lenders[userAddress].lendings.length
+            );
+            userDetails[i - startIndex] = UserLendingDetails({
+                user: userAddress,
+                agreedQuota: quota,
+                lendings: userLendings
+            });
+        }
+        return userDetails;
+    }
+
     /*****************************************
      *               External                *
      *****************************************/
+
+    function getWhitelistedUsers(uint256 startIndex)
+        external
+        view
+        returns (address[] memory)
+    {
+        uint256 whitelistSize = whitelistedAddress.length();
+        if (startIndex >= whitelistSize) {
+            return new address[](0); // Retorna un array vacío si el índice de inicio es mayor o igual al tamaño de la lista.
+        }
+
+        uint256 endIndex = startIndex + 10 > whitelistSize
+            ? whitelistSize
+            : startIndex + 10;
+
+        address[] memory users = new address[](endIndex - startIndex);
+        for (uint256 i = startIndex; i < endIndex; i++) {
+            (, address userAddress) = whitelistedAddress.at(i);
+            users[i - startIndex] = userAddress;
+        }
+        return users;
+    }
 
     function capitalize(uint256 _amount) external whenNotPaused {
         require(_amount > 0, "Amount must be greater than 0");
@@ -141,10 +240,6 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         return currentFunds;
     }
 
-    function getCurrentQuota(address _lender) external view returns (uint256) {
-        return lenders[_lender].aggreedQuota;
-    }
-
     function increaseQuota(address _lender, uint256 _amount)
         external
         onlyOwner
@@ -185,31 +280,6 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         emit QuotaAdjusted(_lender, lender.aggreedQuota);
     }
 
-    function getActiveLoans(
-        address _lender,
-        uint256 offset,
-        uint256 limit
-    ) external view returns (Lending[] memory) {
-        Lender storage lender = lenders[_lender];
-        uint256 totalLoans = lender.lendings.length;
-        if (limit > totalLoans - offset) {
-            limit = totalLoans - offset;
-        }
-
-        Lending[] memory activeLoans = new Lending[](limit);
-        uint256 currentIndex = 0;
-
-        for (uint256 i = 0; i < limit; i++) {
-            Lending storage lending = lender.lendings[offset + i];
-            if (lending.amount > 0) {
-                activeLoans[currentIndex] = lending;
-                currentIndex++;
-            }
-        }
-
-        return activeLoans;
-    }
-
     function getTotalLoans(address _lender) external view returns (uint256) {
         Lender storage lender = lenders[_lender];
         return lender.lendings.length;
@@ -220,7 +290,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         whenNotPaused
     {
         require(
-            whitelist[msg.sender] == true,
+            whitelist[msg.sender].isWhitelisted == true,
             "The current address is not able to get a loan"
         );
         require(_amount > 0, "The amount is invalid");
@@ -246,8 +316,11 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
 
     function addToWhitelist(address _user, uint256 _amount) external onlyOwner {
         require(_user != address(0), "Invalid address");
-        require(!whitelist[_user], "User already whitelisted");
-        whitelist[_user] = true;
+        WhitelistInfo storage currentWhitelist = whitelist[_user];
+        require(!whitelist[_user].isWhitelisted, "User already whitelisted");
+        currentWhitelist.isWhitelisted = true;
+        currentWhitelist.index = whitelistedAddress.length();
+        whitelistedAddress.set(currentWhitelist.index, _user);
         Lender storage lender = lenders[_user];
         lender.aggreedQuota += _amount;
 
@@ -258,8 +331,11 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
 
     function removeFromWhitelist(address _user) external onlyOwner {
         require(_user != address(0), "Invalid address");
-        require(whitelist[_user], "User not whitelisted");
-        whitelist[_user] = false;
+        WhitelistInfo storage currentWhitelist = whitelist[_user];
+        require(currentWhitelist.isWhitelisted, "User not whitelisted");
+        whitelistedAddress.remove(currentWhitelist.index);
+        currentWhitelist.isWhitelisted = false;
+
         emit WhitelistedUserRemoved(_user);
     }
 

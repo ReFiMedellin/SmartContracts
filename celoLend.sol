@@ -15,12 +15,14 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
     struct Lending {
         uint256 amount;
         uint256 initialAmount;
+        uint256 interest;
         uint256 startDate;
         uint256 blockMonths;
     }
 
     struct Lender {
         uint256 aggreedQuota;
+        uint256 currentQuota;
         Lending[] lendings;
     }
 
@@ -32,6 +34,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
     struct UserLendingDetails {
         address user;
         uint256 agreedQuota;
+        uint256 currentQuota;
         Lending[] lendings;
     }
 
@@ -123,8 +126,12 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         return activeLoans;
     }
 
-    function getCurrentQuota(address _lender) public view returns (uint256) {
-        return lenders[_lender].aggreedQuota;
+    function getCurrentQuota(address _lender)
+        public
+        view
+        returns (uint256[2] memory)
+    {
+        return [lenders[_lender].aggreedQuota, lenders[_lender].currentQuota];
     }
 
     function getWhitelistedUserDetails(uint256 startIndex)
@@ -146,7 +153,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         );
         for (uint256 i = startIndex; i < endIndex; i++) {
             (, address userAddress) = whitelistedAddress.at(i);
-            uint256 quota = getCurrentQuota(userAddress);
+            uint256[2] memory quota = getCurrentQuota(userAddress);
             Lending[] memory userLendings = getActiveLoans(
                 userAddress,
                 0,
@@ -154,7 +161,8 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
             );
             userDetails[i - startIndex] = UserLendingDetails({
                 user: userAddress,
-                agreedQuota: quota,
+                agreedQuota: quota[0],
+                currentQuota: quota[1],
                 lendings: userLendings
             });
         }
@@ -216,7 +224,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
             cUSDToken.transferFrom(msg.sender, address(this), _amount),
             "Transfer failed"
         );
-        lender.aggreedQuota += _amount;
+        lender.currentQuota += _amount;
         emit PaymentMade(msg.sender, _lendingIndex, _amount, lending.amount);
 
         if (lending.amount == 0) {
@@ -249,6 +257,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
 
         Lender storage lender = lenders[_lender];
         lender.aggreedQuota += _amount;
+        lender.currentQuota += _amount;
 
         emit QuotaAdjusted(_lender, lender.aggreedQuota);
     }
@@ -267,7 +276,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         }
 
         require(
-            currentDue <= lender.aggreedQuota - _amount,
+            currentDue <= lender.currentQuota - _amount,
             "Decrease amount exceeds current due"
         );
         require(
@@ -276,6 +285,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         );
 
         lender.aggreedQuota -= _amount;
+        lender.currentQuota -= _amount;
 
         emit QuotaAdjusted(_lender, lender.aggreedQuota);
     }
@@ -295,16 +305,17 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         );
         require(_amount > 0, "The amount is invalid");
         require(
-            lenders[msg.sender].aggreedQuota >= _amount,
+            lenders[msg.sender].currentQuota >= _amount,
             "The agreed quota is insuficent"
         );
         uint256 contractBalance = cUSDToken.balanceOf(address(this));
         require(contractBalance >= _amount, "Contract has insufficient funds");
-        lenders[msg.sender].aggreedQuota -= _amount;
+        lenders[msg.sender].currentQuota -= _amount;
         lenders[msg.sender].lendings.push(
             Lending({
                 amount: _amount,
                 initialAmount: _amount,
+                interest: 0,
                 startDate: block.timestamp,
                 blockMonths: _blockMonths
             })
@@ -323,6 +334,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
         whitelistedAddress.set(currentWhitelist.index, _user);
         Lender storage lender = lenders[_user];
         lender.aggreedQuota += _amount;
+        lender.currentQuota += _amount;
 
         emit QuotaAdjusted(_user, lender.aggreedQuota);
 
@@ -400,6 +412,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
             uint256 interestAmount = compoundInterest - lending.amount;
             lending.amount = compoundInterest;
             totalInterest += interestAmount;
+            lending.interest +=interestAmount;
 
             lending.startDate += periodsElapsed * INTEREST_PERIOD;
         }

@@ -224,7 +224,9 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
             cUSDToken.transferFrom(msg.sender, address(this), _amount),
             "Transfer failed"
         );
-        lender.currentQuota += _amount;
+        if (lender.currentQuota + _amount <= lender.aggreedQuota) {
+            lender.currentQuota += _amount;
+        }
         emit PaymentMade(msg.sender, _lendingIndex, _amount, lending.amount);
 
         if (lending.amount == 0) {
@@ -308,6 +310,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
             lenders[msg.sender].currentQuota >= _amount,
             "The agreed quota is insuficent"
         );
+        require(_blockMonths <= 12, "The maximum loan lenght in months is twelve (12)" );
         uint256 contractBalance = cUSDToken.balanceOf(address(this));
         require(contractBalance >= _amount, "Contract has insufficient funds");
         lenders[msg.sender].currentQuota -= _amount;
@@ -412,7 +415,7 @@ contract SmartContractCELO is Pausable, Ownable, ReentrancyGuard {
             uint256 interestAmount = compoundInterest - lending.amount;
             lending.amount = compoundInterest;
             totalInterest += interestAmount;
-            lending.interest +=interestAmount;
+            lending.interest += interestAmount;
 
             lending.startDate += periodsElapsed * INTEREST_PERIOD;
         }
